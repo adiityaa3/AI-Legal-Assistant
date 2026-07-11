@@ -99,7 +99,6 @@ except Exception as e:
     return {
         "error": str(e)
     }
-
 @app.route("/analyze", methods=["POST"])
 def analyze():
 
