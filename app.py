@@ -106,16 +106,17 @@ def analyze_crime_story(story, output_language):
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
+    print("Analyze endpoint called")
 
-    data = request.get_json(silent=True)
-
-    if not data:
-        return jsonify({"error": "Invalid JSON request"}), 400
+    data = request.get_json()
+    print(data)
 
     story = data.get("story", "")
     output_language = data.get("output_language", "English")
 
     result = analyze_crime_story(story, output_language)
+
+    print(result)
 
     return jsonify(result)
 
