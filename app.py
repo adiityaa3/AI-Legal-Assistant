@@ -1,8 +1,9 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import requests
-import json
+from google import genai
+from google.genai import types
 import os
+import json
 from gtts import gTTS
 import base64
 from io import BytesIO
@@ -17,8 +18,9 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise RuntimeError("GEMINI_API_KEY environment variable is not set.")
 
+client = genai.Client(api_key=API_KEY)
+
 MODEL_NAME = "gemini-2.5-flash"
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
 SYSTEM_PROMPT = (
     "You are an AI Legal Assistant specializing in Indian law (IPC and related acts). "
@@ -55,71 +57,63 @@ def home():
 def analyze_crime_story(story, output_language):
 
     if not story or len(story.strip()) < 2:
-        return {"error": "Please provide a valid crime story."}
+        return {
+            "error": "Please provide a valid crime story."
+        }
 
-    prompt = (
-        f"Analyze this crime scenario and explain in {output_language}: '{story}'. "
-        "Return ONLY valid JSON following the provided schema."
+    prompt = f"""
+{SYSTEM_PROMPT}
+
+Crime Story:
+{story}
+
+Respond in {output_language}.
+
+Return ONLY valid JSON with this structure:
+
+{{
+    "crimeCategory":"",
+    "relevantSection":"",
+    "punishmentSummary":"",
+    "simplifiedExplanation":""
+}}
+"""
+try:
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json"
+        )
     )
 
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "systemInstruction": {
-            "parts": [
-                {"text": SYSTEM_PROMPT}
-            ]
-        },
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": RESPONSE_SCHEMA
-        }
-    }
-
     try:
+        return json.loads(response.text)
+    except json.JSONDecodeError:
+        return {
+            "error": "Gemini returned invalid JSON",
+            "response": response.text
+        }
 
-        response = requests.post(
-            f"{API_URL}?key={API_KEY}",
-            json=payload,
-            timeout=30
-        )
-
-        response.raise_for_status()
-
-        result = response.json()
-
-        json_text = result["candidates"][0]["content"]["parts"][0]["text"]
-
-        return json.loads(json_text)
-
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Gemini API Error: {str(e)}"}
-
-    except Exception as e:
-        return {"error": f"Server Error: {str(e)}"}
-
+except Exception as e:
+    return {
+        "error": str(e)
+    }
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
-    print("Analyze endpoint called")
 
-    data = request.get_json()
-    print(data)
+    data = request.get_json(silent=True)
+
+    if not data:
+        return jsonify({"error": "Invalid JSON"}), 400
 
     story = data.get("story", "")
     output_language = data.get("output_language", "English")
 
     result = analyze_crime_story(story, output_language)
 
-    print(result)
-
     return jsonify(result)
-
 # ---------------- SPEECH TO TEXT ---------------- #
 
 @app.route("/speech-to-text", methods=["POST"])
@@ -128,46 +122,32 @@ def speech_to_text():
     if "audio" not in request.files:
         return jsonify({"error": "No audio uploaded"}), 400
 
-    audio = request.files["audio"]
+ audio = request.files["audio"]
 
-    audio_b64 = base64.b64encode(audio.read()).decode()
+audio_bytes = audio.read()
+mime_type = audio.mimetype or "audio/wav"
 
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": "audio/wav",
-                            "data": audio_b64
-                        }
-                    },
-                    {
-                        "text": "Transcribe this speech accurately and return only plain text."
-                    }
-                ]
-            }
+try:
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=[
+            types.Part.from_bytes(
+                data=audio_bytes,
+                mime_type=mime_type
+            ),
+            "Transcribe this speech accurately. Return plain text only."
         ]
-    }
+    )
 
-    try:
+        return jsonify({
+            "transcription": response.text
+        })
 
-        response = requests.post(
-            f"{API_URL}?key={API_KEY}",
-            json=payload,
-            timeout=60
-        )
-
-        response.raise_for_status()
-
-        result = response.json()
-
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
-
-        return jsonify({"transcription": text})
-
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 # ---------------- TEXT TO SPEECH ---------------- #
 
