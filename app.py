@@ -5,7 +5,6 @@ from google.genai import types
 import os
 import json
 from gtts import gTTS
-import base64
 from io import BytesIO
 
 app = Flask(__name__)
@@ -24,24 +23,8 @@ MODEL_NAME = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = (
     "You are an AI Legal Assistant specializing in Indian law (IPC and related acts). "
-    "Analyze the given crime story and provide a clear explanation in the target language."
+    "Analyze the given crime story and provide a clear explanation in the requested language."
 )
-
-RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "crimeCategory": {"type": "string"},
-        "relevantSection": {"type": "string"},
-        "punishmentSummary": {"type": "string"},
-        "simplifiedExplanation": {"type": "string"}
-    },
-    "required": [
-        "crimeCategory",
-        "relevantSection",
-        "punishmentSummary",
-        "simplifiedExplanation"
-    ]
-}
 
 # ---------------- HOME ---------------- #
 
@@ -69,7 +52,7 @@ Crime Story:
 
 Respond in {output_language}.
 
-Return ONLY valid JSON with this structure:
+Return ONLY valid JSON in this format:
 
 {{
     "crimeCategory":"",
@@ -78,27 +61,31 @@ Return ONLY valid JSON with this structure:
     "simplifiedExplanation":""
 }}
 """
-try:
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json"
-        )
-    )
 
     try:
-        return json.loads(response.text)
-    except json.JSONDecodeError:
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+
+        try:
+            return json.loads(response.text)
+        except json.JSONDecodeError:
+            return {
+                "error": "Gemini returned invalid JSON",
+                "response": response.text
+            }
+
+    except Exception as e:
         return {
-            "error": "Gemini returned invalid JSON",
-            "response": response.text
+            "error": str(e)
         }
 
-except Exception as e:
-    return {
-        "error": str(e)
-    }
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
 
@@ -113,6 +100,8 @@ def analyze():
     result = analyze_crime_story(story, output_language)
 
     return jsonify(result)
+
+
 # ---------------- SPEECH TO TEXT ---------------- #
 
 @app.route("/speech-to-text", methods=["POST"])
@@ -121,23 +110,24 @@ def speech_to_text():
     if "audio" not in request.files:
         return jsonify({"error": "No audio uploaded"}), 400
 
- audio = request.files["audio"]
+    audio = request.files["audio"]
 
-audio_bytes = audio.read()
-mime_type = audio.mimetype or "audio/wav"
+    audio_bytes = audio.read()
 
-try:
+    mime_type = audio.mimetype or "audio/wav"
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[
-            types.Part.from_bytes(
-                data=audio_bytes,
-                mime_type=mime_type
-            ),
-            "Transcribe this speech accurately. Return plain text only."
-        ]
-    )
+    try:
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[
+                types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type=mime_type
+                ),
+                "Transcribe this speech accurately. Return only plain text."
+            ]
+        )
 
         return jsonify({
             "transcription": response.text
@@ -147,6 +137,7 @@ try:
         return jsonify({
             "error": str(e)
         }), 500
+
 
 # ---------------- TEXT TO SPEECH ---------------- #
 
@@ -159,13 +150,12 @@ def text_to_speech():
         return jsonify({"error": "Invalid JSON"}), 400
 
     text = data.get("text", "")
-
     language = data.get("language", "en")[:2]
 
     if not text.strip():
         return jsonify({"error": "Text cannot be empty"}), 400
 
-    supported = [
+    supported_languages = [
         "en",
         "hi",
         "bn",
@@ -178,28 +168,31 @@ def text_to_speech():
         "kn"
     ]
 
-    if language not in supported:
+    if language not in supported_languages:
         language = "en"
 
     try:
 
         tts = gTTS(text=text, lang=language)
 
-        audio = BytesIO()
+        audio_stream = BytesIO()
 
-        tts.write_to_fp(audio)
+        tts.write_to_fp(audio_stream)
 
-        audio.seek(0)
+        audio_stream.seek(0)
 
         return send_file(
-            audio,
+            audio_stream,
             mimetype="audio/mpeg",
             as_attachment=False,
             download_name="speech.mp3"
         )
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e)
+        }), 500
+
 
 # ---------------- MAIN ---------------- #
 
